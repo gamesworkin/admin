@@ -180,11 +180,21 @@ function can(p) { return STATE.isAdmin || p === "perfil" || p === "dashboard" ? 
 
 /* ================= Bindings do Realtime Database ================= */
 function bindNode(path, key, cb) {
-  const un = onValue(ref(db, path), s => { STATE[key] = s.val() || {}; cb && cb(); });
+  const un = onValue(ref(db, path), s => { STATE[key] = s.val() || {}; cb && cb(); },
+    err => {
+      console.error("Falha ao ler /" + path, err);
+      toast(`Sem permissão para ler "${path}" no banco. Ajuste as regras do Realtime Database.`, "err");
+    });
   STATE.unsubs.push(un);
 }
 function bindData() {
-  const rerender = () => { if (STATE.ready) renderView(); };
+  const rerender = () => {
+    if (!STATE.ready) return;
+    renderView();
+    reconcilePayables(true).then(nCreated => { if (nCreated) renderView(); });
+    autoSettleDuePayables();
+    checkReceivableAlerts();
+  };
   ["products", "kits", "entries", "sales", "payables", "receivables", "expenses", "users", "settings", "accounts", "fin"]
     .forEach(k => bindNode(k, k, rerender));
   STATE.ready = true;
@@ -325,9 +335,15 @@ async function finRemoveByRef(refKind, refId) {
 /* ---- Filtros de período reutilizáveis: diário / mensal / anual / personalizado ---- */
 const PERIOD_STORE = {};
 const lastDayOfMonth = ym => new Date(+ym.slice(0, 4), +ym.slice(5, 7), 0).toISOString().slice(0, 10);
-function periodBar(id, def = "month") {
+function periodSeed(mode) {
   const t = todayISO();
-  const s = PERIOD_STORE[id] || (PERIOD_STORE[id] = { mode: def, from: t.slice(0, 8) + "01", to: lastDayOfMonth(t.slice(0, 7)) });
+  if (mode === "all") return { mode, from: "", to: "" };
+  if (mode === "day") return { mode, from: t, to: t };
+  if (mode === "year") return { mode, from: t.slice(0, 4) + "-01-01", to: t.slice(0, 4) + "-12-31" };
+  return { mode, from: t.slice(0, 8) + "01", to: lastDayOfMonth(t.slice(0, 7)) };
+}
+function periodBar(id, def = "month") {
+  const s = PERIOD_STORE[id] || (PERIOD_STORE[id] = periodSeed(def));
   return `<div class="toolbar" data-period="${id}">
     <select id="${id}_mode" title="Período">
       ${[["day", "Diário (hoje)"], ["month", "Mensal"], ["year", "Anual"], ["all", "Tudo"], ["custom", "Personalizado"]]
@@ -668,6 +684,12 @@ function viewEstoque(root) {
         <option value="prazo">A prazo — gera conta a pagar</option>
         <option value="nao">Não lançar no financeiro</option></select></label>
       <label class="field"><span>Conta de origem</span><select id="e_acc">${accountOptions(defaultAccount())}</select></label>
+      <label class="field hidden" id="e_instWrap"><span>Parcelas (a prazo)</span><select id="e_inst">${Array.from({length:12},(_,i)=>`<option value="${i+1}">${i+1}x</option>`).join("")}</select></label>
+      <label class="field hidden" id="e_firstWrap"><span>Vencimento da 1ª parcela</span><input id="e_first" type="date" value="${addMonthsISO(todayISO(), 1)}"></label>
+      <label class="field hidden" id="e_autoWrap"><span>Débito das parcelas</span><select id="e_auto">
+        <option value="0" selected>Manual — fica em aberto no Contas a pagar</option>
+        <option value="1">Automático — quita na data do vencimento</option></select></label>
+      <div class="hidden" id="e_instPrev" style="grid-column:1/-1"></div>
     </div>
     <div class="card" style="margin-top:12px;background:var(--panel-2)"><div id="e_preview" class="muted">Preencha os campos para ver a simulação do novo custo médio.</div></div>
     <div style="margin-top:12px"><button class="btn btn-primary" id="e_save">Registrar entrada</button></div>
@@ -773,6 +795,32 @@ function viewEstoque(root) {
   };
   ["e_prod", "e_qty", "e_total", "e_unit", "e_freight"].forEach(i => { $("#" + i).oninput = preview; $("#" + i).onchange = preview; });
 
+  /* ---------- parcelamento da compra a prazo ---------- */
+  const instPreview = () => {
+    const prazo = $("#e_pay").value === "prazo";
+    ["e_instWrap", "e_firstWrap", "e_autoWrap", "e_instPrev"].forEach(id => $("#" + id).classList.toggle("hidden", !prazo));
+    if (!prazo) return;
+    const q = num($("#e_qty").value);
+    const freight = num($("#e_freight").value);
+    const unit = num($("#e_unit").value) || (q ? (num($("#e_total").value) + freight) / q : 0);
+    const total = unit * q;
+    const n = Math.max(1, Math.min(12, parseInt($("#e_inst").value) || 1));
+    const first = $("#e_first").value || $("#e_date").value || todayISO();
+    const parts = installmentPlan(total, n, first);
+    $("#e_instPrev").innerHTML = total > 0
+      ? `<div class="card" style="background:var(--panel-2)"><strong>Parcelamento:</strong> ${n}x · ${parts.map(x => `${fmtDate(x.due)} — ${money(x.amount)}`).join(" · ")}
+         <div class="muted" style="margin-top:6px">${$("#e_auto").value === "1"
+        ? "Cada parcela será debitada automaticamente da conta escolhida na data do vencimento."
+        : "As parcelas ficam em aberto no Contas a pagar para quitação manual."}</div></div>`
+      : `<div class="muted">Informe quantidade e valor para simular as parcelas.</div>`;
+  };
+  ["e_pay", "e_inst", "e_first", "e_auto", "e_qty", "e_total", "e_unit", "e_freight", "e_date"].forEach(i => {
+    $("#" + i).addEventListener("change", instPreview); $("#" + i).addEventListener("input", instPreview);
+  });
+  $("#e_date").addEventListener("change", () => { if (!$("#e_first").dataset.touched) $("#e_first").value = addMonthsISO($("#e_date").value || todayISO(), 1); instPreview(); });
+  $("#e_first").addEventListener("change", () => { $("#e_first").dataset.touched = "1"; });
+  instPreview();
+
   $("#e_save").onclick = async () => {
     const pid = $("#e_prod").value, p = STATE.products[pid];
     if (!p) return toast("Cadastre um produto antes", "err");
@@ -797,12 +845,24 @@ function viewEstoque(root) {
       user: STATE.user.email
     });
     if (mode === "prazo") {
-      await push(ref(db, "payables"), {
-        description: `Compra ${p.name} (${q} un)`, supplier: $("#e_supplier").value.trim(),
-        amount: total, due: eDate, status: "pendente", accountId: accId,
-        category: "Compra de mercadoria", refKind: "entry", refId: entRef.key, createdAt: Date.now()
+      const n = Math.max(1, Math.min(12, parseInt($("#e_inst").value) || 1));
+      const first = $("#e_first").value || eDate;
+      const autoPay = $("#e_auto").value === "1";
+      const res = await createPayablesForEntry({
+        entryId: entRef.key, productName: p.name, qty: q, total, n, first,
+        supplier: $("#e_supplier").value.trim(), accountId: accId || "", autoPay
       });
-      toast("Entrada registrada e conta a pagar gerada", "ok");
+      if (res.created > 0) {
+        // mostra o resultado já na aba certa do Financeiro, sem filtros escondendo
+        STATE.finTab = "pay";
+        PERIOD_STORE["payPP"] = periodSeed("all");
+        PAY_FORCE_ALL = true;
+        toast(n > 1
+          ? `Entrada registrada · ${n} parcelas geradas no contas a pagar (venc. ${fmtDate(res.parts[0].due)} a ${fmtDate(res.parts[n - 1].due)})`
+          : `Entrada registrada · conta a pagar gerada para ${fmtDate(res.parts[0].due)}`, "ok");
+      } else {
+        toast(`Entrada salva, mas nenhuma parcela foi gravada no contas a pagar${res.error ? ": " + res.error : ""}. Abra o Financeiro › Contas a pagar e use "Gerar títulos faltantes".`, "err");
+      }
     } else if (mode === "imediato" && accId) {
       await finAdd({
         date: eDate, kind: "compra", amount: total, accountId: accId,
@@ -816,6 +876,165 @@ function viewEstoque(root) {
     renderView();
   };
   preview();
+}
+
+/* ================= PARCELAMENTO / AUTOMAÇÕES DE TÍTULOS ================= */
+/* Divide um total em N parcelas mensais a partir de uma data (ajusta centavos na última). */
+function installmentPlan(total, n, firstDue) {
+  n = Math.max(1, Math.min(12, parseInt(n) || 1));
+  const cents = Math.round(num(total) * 100);
+  const base = Math.floor(cents / n);
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const v = (i === n - 1 ? cents - base * (n - 1) : base) / 100;
+    out.push({ i: i + 1, amount: Number(v.toFixed(2)), due: addMonthsISO(firstDue, i) });
+  }
+  return out;
+}
+function addMonthsISO(iso, months) {
+  const [y, m, d] = String(iso || todayISO()).split("-").map(Number);
+  const last = new Date(y, m - 1 + months + 1, 0).getDate();
+  const dt = new Date(y, m - 1 + months, Math.min(d, last));
+  return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}-${String(dt.getDate()).padStart(2, "0")}`;
+}
+
+/* Cria os títulos a pagar de uma entrada a prazo. Retorna {created, parts, error}. */
+async function createPayablesForEntry(o) {
+  const n = Math.max(1, Math.min(12, parseInt(o.n) || 1));
+  const parts = installmentPlan(o.total, n, o.first || todayISO());
+  let created = 0, error = "";
+  try {
+    for (const part of parts) {
+      await push(ref(db, "payables"), {
+        description: `Compra ${o.productName} (${o.qty} un)` + (n > 1 ? ` — parcela ${part.i}/${n}` : ""),
+        supplier: o.supplier || "",
+        amount: part.amount, due: part.due, status: "pendente", accountId: o.accountId || "",
+        category: "Compra de mercadoria", refKind: "entry", refId: o.entryId,
+        installment: part.i, installments: n, autoPay: !!o.autoPay, createdAt: Date.now()
+      });
+      created++;
+    }
+    await update(ref(db, "entries/" + o.entryId), { installments: n, firstDue: parts[0].due, autoPay: !!o.autoPay });
+  } catch (err) {
+    console.error("Falha ao gerar as parcelas em payables", err);
+    error = err?.message || String(err);
+  }
+  return { created, parts, error };
+}
+
+/* Entradas a prazo que ainda não possuem título no contas a pagar. */
+function entriesMissingPayables() {
+  const pays = list(STATE.payables);
+  return list(STATE.entries)
+    .filter(e => e.settlement === "prazo")
+    .filter(e => !pays.some(p => p.refKind === "entry" && p.refId === e.id));
+}
+
+/* Repara entradas a prazo sem título (falha de gravação, regras, offline etc.). */
+async function reconcilePayables(silent) {
+  const missing = entriesMissingPayables();
+  if (!missing.length) { if (!silent) toast("Todas as entradas a prazo já possuem título no contas a pagar", "ok"); return 0; }
+  let total = 0, lastError = "";
+  for (const e of missing) {
+    const r = await createPayablesForEntry({
+      entryId: e.id, productName: e.productName || "item", qty: num(e.qty), total: num(e.total),
+      n: num(e.installments) || 1, first: e.firstDue || e.date || todayISO(),
+      supplier: e.supplier || "", accountId: e.accountId || "", autoPay: !!e.autoPay
+    });
+    total += r.created;
+    if (r.error) lastError = r.error;
+  }
+  if (!silent) {
+    if (total) toast(`${total} título(s) gerados no contas a pagar`, "ok");
+    else toast(`Não foi possível gravar os títulos${lastError ? ": " + lastError : ""}`, "err");
+  }
+  return total;
+}
+
+/* Quita automaticamente as parcelas a pagar cuja data de vencimento chegou. */
+let AUTO_PAY_RUNNING = false;
+async function autoSettleDuePayables() {
+  if (AUTO_PAY_RUNNING) return;
+  AUTO_PAY_RUNNING = true;
+  try {
+    const t = todayISO();
+    for (const r of list(STATE.payables)) {
+      if (r.status === "pago" || !r.autoPay || !r.accountId) continue;
+      if (!r.due || r.due > t) continue;
+      // nunca quitar automaticamente um título criado hoje: ele precisa aparecer
+      // em aberto no Contas a pagar antes de qualquer débito automático
+      if (r.createdAt && new Date(r.createdAt).toISOString().slice(0, 10) >= t) continue;
+      if (finList().some(f => f.refKind === "payables" && f.refId === r.id)) continue;
+      await update(ref(db, "payables/" + r.id), {
+        status: "pago", settledAt: r.due, settledAmount: num(r.amount), autoSettled: true
+      });
+      await finAdd({
+        date: r.due, kind: "compra", dir: "out", accountId: r.accountId, amount: num(r.amount),
+        description: r.description, party: r.supplier || "",
+        category: r.category || "Compra de mercadoria", refKind: "payables", refId: r.id
+      });
+      toast(`Parcela quitada automaticamente: ${r.description} · ${money(r.amount)}`, "ok");
+    }
+  } catch (e) { console.warn(e); }
+  finally { AUTO_PAY_RUNNING = false; }
+}
+
+/* Alerta de títulos a receber vencidos/vencendo: quitar ou postergar. */
+const RECV_SNOOZE = new Set();
+let RECV_ALERT_OPEN = false;
+function checkReceivableAlerts() {
+  if (RECV_ALERT_OPEN) return;
+  if (!$("#modalBackdrop").classList.contains("hidden")) return;
+  const t = todayISO();
+  const r = list(STATE.receivables)
+    .filter(x => x.status !== "recebido" && x.due && x.due <= t && !RECV_SNOOZE.has(x.id))
+    .sort((a, b) => (a.due || "").localeCompare(b.due || ""))[0];
+  if (!r) return;
+  RECV_ALERT_OPEN = true;
+  const close = () => { RECV_ALERT_OPEN = false; closeModal(); };
+  openModal("Título a receber vencido", `
+    <p>O título abaixo venceu em <strong>${fmtDate(r.due)}</strong>. Já foi quitado?</p>
+    <div class="card" style="background:var(--panel-2)">
+      <strong>${esc(r.description || "Título")}</strong>
+      <div class="muted">${esc(r.customer || "—")} · ${esc(r.category || "Recebimento")}</div>
+      <div style="margin-top:6px;font-size:18px"><strong>${money(r.amount)}</strong></div>
+    </div>
+    <div class="grid2" style="margin-top:12px">
+      <label class="field"><span>Conta que recebe / vai receber *</span><select id="ra_acc">${accountOptions(r.accountId)}</select></label>
+      <label class="field"><span>Data do recebimento (se já quitado)</span><input id="ra_date" type="date" value="${todayISO()}"></label>
+      <label class="field"><span>Novo prazo (se ainda não quitado)</span><input id="ra_new" type="date" value="${addMonthsISO(todayISO(), 0)}"></label>
+      <label class="field"><span>Valor (R$)</span><input id="ra_amount" type="number" step="0.01" value="${num(r.amount)}"></label>
+    </div>
+    <p class="muted">Ao postergar, o título continua em aberto com o novo vencimento e cairá na conta selecionada quando for quitado.</p>
+  `, `<button class="btn" id="ra_later">Decidir depois</button>
+      <button class="btn" id="ra_post">Não — postergar</button>
+      <button class="btn btn-primary" id="ra_paid">Sim — já foi quitado</button>`);
+
+  $("#ra_later").onclick = () => { RECV_SNOOZE.add(r.id); close(); checkReceivableAlerts(); };
+  $("#ra_post").onclick = async () => {
+    const nd = $("#ra_new").value;
+    if (!nd || nd <= r.due) return toast("Escolha uma data de prazo posterior ao vencimento", "err");
+    await update(ref(db, "receivables/" + r.id), {
+      due: nd, accountId: $("#ra_acc").value, status: "pendente",
+      postponedFrom: r.due, postponedAt: Date.now()
+    });
+    RECV_SNOOZE.add(r.id);
+    close(); toast(`Pagamento postergado para ${fmtDate(nd)}`, "ok");
+  };
+  $("#ra_paid").onclick = async () => {
+    const accId = $("#ra_acc").value;
+    if (!accId) return toast("Cadastre/escolha uma conta", "err");
+    const date = $("#ra_date").value || todayISO();
+    const amount = num($("#ra_amount").value) || num(r.amount);
+    await update(ref(db, "receivables/" + r.id), { status: "recebido", settledAt: date, accountId: accId, settledAmount: amount });
+    await finAdd({
+      date, kind: r.category === "Venda" ? "venda" : "ajuste_in", dir: "in", accountId: accId, amount,
+      description: r.description, party: r.customer || "", category: r.category || "Recebimento",
+      refKind: "receivables", refId: r.id
+    });
+    RECV_SNOOZE.add(r.id);
+    close(); toast("Recebimento lançado no saldo", "ok");
+  };
 }
 
 /* Desfaz o efeito de uma entrada no produto (estoque + custo médio) */
@@ -897,6 +1116,8 @@ function viewVendas(root) {
     </div>
     <div id="vBody" style="margin-top:12px"></div>
   </div>`;
+  const fixBtn = $("#payFix");
+  if (fixBtn) fixBtn.onclick = async () => { await reconcilePayables(false); renderView(); };
   let rows = [];
   const draw = () => {
     const q = ($("#v_q").value || "").toLowerCase();
@@ -1196,6 +1417,7 @@ function finLedger(el, kinds, title, pidBase, defaultKind) {
         <input id="${pidBase}_q" placeholder="Buscar descrição/pessoa">
         <button class="btn" id="${pidBase}_csv">CSV</button>
         <button class="btn" id="${pidBase}_pdf">PDF</button>
+        ${node === "payables" ? `<button class="btn" id="payFix">Gerar títulos faltantes</button>` : ""}
         <button class="btn btn-primary" id="${pidBase}_new">+ Novo lançamento</button>
       </div>
     </div>
@@ -1286,6 +1508,7 @@ function finForm(kinds, defaultKind, id) {
 }
 
 /* ---------- Contas a pagar / a receber ---------- */
+let PAY_FORCE_ALL = false;
 function accountsPanel(el, node, title, doneStatus, partyLabel) {
   const pidBase = node === "payables" ? "payP" : "recP";
   const pid = pidBase + "P";
@@ -1293,7 +1516,7 @@ function accountsPanel(el, node, title, doneStatus, partyLabel) {
   <div class="card">
     <div class="card-head"><h3>${title}</h3><div style="flex:1"></div>
       <div class="toolbar">
-        ${periodBar(pid, "month")}
+        ${periodBar(pid, "all")}
         <select id="${pidBase}_st">
           <option value="">Todas as situações</option>
           <option value="pend">Em aberto</option>
@@ -1306,13 +1529,22 @@ function accountsPanel(el, node, title, doneStatus, partyLabel) {
         <button class="btn btn-primary" id="accNew">+ Novo lançamento</button>
       </div>
     </div>
-    <p class="muted">Os títulos filtram pelo vencimento (${periodLabel(pid)}). Ao liquidar, o valor entra ou sai da conta escolhida e o saldo é atualizado.</p>
+    <p class="muted">Filtro de vencimento: <strong>${periodLabel(pid)}</strong> — por padrão mostra <strong>todos</strong> os títulos, inclusive parcelas com vencimento em meses futuros. Ao liquidar, o valor entra ou sai da conta escolhida e o saldo é atualizado.</p>
     <div id="${pidBase}_body" style="margin-top:12px"></div>
   </div>`;
+  if (node === "payables" && PAY_FORCE_ALL) {
+    PAY_FORCE_ALL = false;
+    PERIOD_STORE[pid] = periodSeed("all");
+    const md = $("#" + pid + "_mode"), fr = $("#" + pid + "_from"), to = $("#" + pid + "_to");
+    if (md) md.value = "all"; if (fr) fr.value = ""; if (to) to.value = "";
+    const st = $("#" + pidBase + "_st"); if (st) st.value = "";
+  }
   let rows = [];
   const draw = () => {
     const stF = $("#" + pidBase + "_st").value, q = ($("#" + pidBase + "_q").value || "").toLowerCase();
-    const all = list(STATE[node]).filter(r => inPeriod(r.due, pid));
+    const everything = list(STATE[node]);
+    const all = everything.filter(r => !r.due || inPeriod(r.due, pid));
+    const hidden = everything.length - all.length;
     rows = all
       .filter(r => {
         const done = r.status === doneStatus, late = !done && (r.due || "") < todayISO();
@@ -1332,21 +1564,35 @@ function accountsPanel(el, node, title, doneStatus, partyLabel) {
         ${stat("Liquidado no período", money(rows.filter(r => r.status === doneStatus).reduce((s, r) => s + num(r.amount), 0)))}
         ${stat("Saldo total das contas", money(totalBalance()))}
       </div>
+      ${node === "payables" && entriesMissingPayables().length ? `<div class="alert" style="margin-bottom:12px">${entriesMissingPayables().length} entrada(s) a prazo do Estoque/Compras ainda sem título aqui. Clique em <strong>Gerar títulos faltantes</strong>.</div>` : ""}
+      ${hidden ? `<div class="alert" style="margin-bottom:12px">${hidden} título(s) com vencimento fora do filtro <strong>${periodLabel(pid)}</strong> estão ocultos. Selecione <strong>Tudo</strong> no período para ver as parcelas futuras.</div>` : ""}
       ${rows.length ? tbl(["Vencimento", "Descrição", partyLabel, "Categoria", "Valor", "Situação", "Conta / liquidação", "Ações"],
       rows.map(r => {
         const done = r.status === doneStatus;
         const late = !done && (r.due || "") < todayISO();
-        return `<tr><td>${fmtDate(r.due)}</td><td>${esc(r.description)}</td>
+        const autoTag = r.autoPay ? ` <span class="pill" title="Será debitado automaticamente da conta na data do vencimento">débito automático</span>` : "";
+        const autoInfo = r.autoPay && !done
+          ? `<small class="muted">auto em ${fmtDate(r.due)} · ${esc(accName(r.accountId))}</small>`
+          : "—";
+        return `<tr><td>${fmtDate(r.due)}</td><td>${esc(r.description)}${autoTag}</td>
         <td>${esc(r.supplier || r.customer || "—")}</td><td>${esc(r.category || "—")}</td>
         <td class="right">${money(r.amount)}</td>
         <td><span class="pill ${done ? "ok" : late ? "dan" : "warn"}">${done ? doneStatus : late ? "vencido" : "pendente"}</span></td>
-        <td>${done ? `${esc(accName(r.accountId))}<br><small class="muted">${fmtDate(r.settledAt)}</small>` : "—"}</td>
+        <td>${done ? `${esc(accName(r.accountId))}<br><small class="muted">${fmtDate(r.settledAt)}${r.autoSettled ? " · automático" : ""}</small>` : autoInfo}</td>
         <td>${done ? `<button class="btn btn-sm" data-undo="${r.id}">Reabrir</button> ` :
-          `<button class="btn btn-sm btn-ok" data-ok="${r.id}">Liquidar</button> `}
+          `<button class="btn btn-sm btn-ok" data-ok="${r.id}">Liquidar</button> ` +
+          (node === "payables" ? `<button class="btn btn-sm" data-auto="${r.id}">${r.autoPay ? "Desligar auto" : "Ligar auto"}</button> ` : "")}
             <button class="btn btn-sm btn-danger" data-del="${r.id}">Excluir</button></td></tr>`;
       }).join("")) : `<div class="empty">Nenhum lançamento no período.</div>`}`;
 
     $$("[data-ok]", el).forEach(b => b.onclick = () => settleForm(node, b.dataset.ok, doneStatus));
+    $$("[data-auto]", el).forEach(b => b.onclick = async () => {
+      const r = STATE[node][b.dataset.auto] || {};
+      if (!r.autoPay && !r.accountId) return toast("Defina a conta do título (Liquidar) antes de ligar o débito automático", "err");
+      await update(ref(db, node + "/" + b.dataset.auto), { autoPay: !r.autoPay });
+      toast(!r.autoPay ? "Débito automático ligado" : "Débito automático desligado", "ok");
+    });
+
     $$("[data-undo]", el).forEach(b => b.onclick = () => confirmDialog("Reabrir o título e desfazer o lançamento no saldo?", async () => {
       await finRemoveByRef(node, b.dataset.undo);
       await update(ref(db, node + "/" + b.dataset.undo), { status: "pendente", settledAt: "", accountId: "" });
