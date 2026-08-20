@@ -2324,13 +2324,13 @@ function viewConfig(root) {
      users/{uid}.chatRole    -> "moderador" | "membro"   (gerenciado pelo admin)
      users/{uid}.chatMuted / .chatBanned -> boolean
    ========================================================================== */
-const MSG = { tab: "mail", box: "inbox", chatId: null, mail: {}, chats: {}, presence: {}, msgs: {}, unsubs: [], msgUnsub: null };
+const MSG = { tab: "mail", box: "inbox", chatId: null, _mounted: null, mail: {}, chats: {}, presence: {}, msgs: {}, unsubs: [], msgUnsub: null };
 
 function msgClear() {
   MSG.unsubs.forEach(u => { try { u(); } catch (e) {} });
   MSG.unsubs = [];
   if (MSG.msgUnsub) { try { MSG.msgUnsub(); } catch (e) {} MSG.msgUnsub = null; }
-  MSG.mail = {}; MSG.chats = {}; MSG.presence = {}; MSG.msgs = {}; MSG.chatId = null;
+  MSG.mail = {}; MSG.chats = {}; MSG.presence = {}; MSG.msgs = {}; MSG.chatId = null; MSG._mounted = null;
 }
 
 function myName(u = STATE.profile, email = STATE.user?.email) {
@@ -2384,7 +2384,9 @@ function startMessaging() {
     const u = onValue(ref(db, path), s => {
       MSG[key] = s.val() || {};
       refreshMsgBadge();
-      if (STATE.view === "mensagens") renderMensagensBody();
+      const modalOpen = !document.getElementById("modalBackdrop")?.classList.contains("hidden");
+      // não re-renderiza enquanto um formulário/modal está aberto (evita perder o que foi digitado)
+      if (STATE.view === "mensagens" && !modalOpen) renderMensagensBody();
     }, err => console.warn("Sem permissão para ler /" + path, err));
     MSG.unsubs.push(u);
   };
@@ -2562,36 +2564,76 @@ function chatTitle(c) {
 }
 function chatView(el) {
   const chats = myChats();
-  if (MSG.chatId && !chats.some(c => c.id === MSG.chatId)) MSG.chatId = null;
+  if (MSG.chatId && !chats.some(c => c.id === MSG.chatId)) { MSG.chatId = null; MSG._mounted = null; }
+  if (!el.querySelector("#chatLayout")) {
+    el.innerHTML = `
+    <div class="msg-layout chat-layout" id="chatLayout">
+      <aside class="card msg-side" id="chatSide"></aside>
+      <section class="card msg-main" id="chatPane"></section>
+    </div>`;
+    MSG._mounted = null;
+  }
+  const layout = el.querySelector("#chatLayout");
+  if (layout) layout.classList.toggle("chat-open", !!MSG.chatId);
+  renderChatSide();
+  if (MSG.chatId) {
+    if (MSG._mounted !== MSG.chatId) openChat(MSG.chatId);
+    else refreshChatHeader(MSG.chatId);
+  } else {
+    if (MSG.msgUnsub) { try { MSG.msgUnsub(); } catch (e) {} MSG.msgUnsub = null; }
+    MSG._mounted = null;
+    const pane = $("#chatPane");
+    if (pane) pane.innerHTML = `<div class="empty">Escolha uma conversa ou inicie uma nova.</div>`;
+  }
+}
+
+function renderChatSide() {
+  const side = $("#chatSide"); if (!side) return;
+  const chats = myChats();
   const online = list(STATE.users).filter(u => u.id !== STATE.user.uid && isOnline(u.id));
-  el.innerHTML = `
-  <div class="msg-layout">
-    <aside class="card msg-side">
-      <div class="toolbar" style="gap:6px">
-        <button class="btn btn-primary" id="chNewDirect" style="flex:1">+ Conversa</button>
-        <button class="btn" id="chNewGroup" style="flex:1">+ Grupo</button>
-      </div>
-      <div class="section-title">Conversas</div>
-      <div class="msg-folders">${chats.length ? chats.map(c => `
-        <button class="msg-folder ${c.id === MSG.chatId ? "active" : ""}" data-chat="${c.id}">
-          <span>${c.type === "group" ? "👥" : `<span class="dot ${isOnline(Object.keys(c.members).find(u => u !== STATE.user.uid)) ? "on" : ""}"></span>`}
-            ${esc(chatTitle(c))}</span>
-          <small class="muted">${fmtWhen(c.lastAt)}</small>
-        </button>`).join("") : `<div class="empty">Nenhuma conversa ainda.</div>`}</div>
-      <div class="section-title">Quem está online (${online.length})</div>
-      <div class="msg-folders">${online.length ? online.map(u => `
-        <button class="msg-folder" data-dm="${u.id}"><span><span class="dot on"></span>${esc(userName(u.id))}</span>
-        ${u.chatRole === "moderador" ? `<span class="pill">mod</span>` : ""}</button>`).join("")
+  const others = list(STATE.users).filter(u => u.id !== STATE.user.uid && !isOnline(u.id));
+  side.innerHTML = `
+    <div class="toolbar" style="gap:6px">
+      <button class="btn btn-primary" id="chNewDirect" style="flex:1">+ Conversa</button>
+      <button class="btn" id="chNewGroup" style="flex:1">+ Grupo</button>
+    </div>
+    <div class="section-title">Conversas</div>
+    <div class="msg-folders">${chats.length ? chats.map(c => `
+      <button class="msg-folder ${c.id === MSG.chatId ? "active" : ""}" data-chat="${c.id}">
+        <span>${c.type === "group" ? "👥" : `<span class="dot ${isOnline(Object.keys(c.members || {}).find(u => u !== STATE.user.uid)) ? "on" : ""}"></span>`}
+          ${esc(chatTitle(c))}</span>
+        <small class="muted">${fmtWhen(c.lastAt)}</small>
+      </button>`).join("") : `<div class="empty">Nenhuma conversa ainda.</div>`}</div>
+    <div class="section-title">Quem está online (${online.length})</div>
+    <div class="msg-folders">${online.length ? online.map(u => `
+      <button class="msg-folder" data-dm="${u.id}"><span><span class="dot on"></span>${esc(userName(u.id))}</span>
+      ${u.chatRole === "moderador" ? `<span class="pill">mod</span>` : ""}</button>`).join("")
       : `<div class="empty">Ninguém online no momento.</div>`}</div>
-    </aside>
-    <section class="card msg-main" id="chatPane"></section>
-  </div>`;
-  $$("[data-chat]", el).forEach(b => b.onclick = () => { MSG.chatId = b.dataset.chat; openChat(MSG.chatId); });
-  $$("[data-dm]", el).forEach(b => b.onclick = () => openDirectChat(b.dataset.dm));
+    <div class="section-title">Outros usuários</div>
+    <div class="msg-folders">${others.length ? others.map(u => `
+      <button class="msg-folder" data-dm="${u.id}"><span><span class="dot"></span>${esc(userName(u.id))}</span></button>`).join("")
+      : `<div class="empty">Nenhum outro usuário cadastrado.</div>`}</div>`;
+  $$("[data-chat]", side).forEach(b => b.onclick = () => selectChat(b.dataset.chat));
+  $$("[data-dm]", side).forEach(b => b.onclick = () => openDirectChat(b.dataset.dm));
   $("#chNewDirect").onclick = () => newDirectForm();
   $("#chNewGroup").onclick = () => newGroupForm();
-  if (MSG.chatId) openChat(MSG.chatId); else $("#chatPane").innerHTML = `<div class="empty">Escolha uma conversa ou inicie uma nova.</div>`;
 }
+
+function selectChat(chatId) {
+  if (MSG.chatId === chatId && MSG._mounted === chatId) return;
+  MSG.chatId = chatId;
+  renderMensagensBody();
+}
+
+function refreshChatHeader(chatId) {
+  const c = MSG.chats[chatId]; const info = $("#chatInfo");
+  if (!c || !info) return;
+  const members = Object.keys(c.members || {});
+  info.textContent = c.type === "group"
+    ? members.length + " participante(s) · " + members.filter(isOnline).length + " online"
+    : (isOnline(members.find(u => u !== STATE.user.uid)) ? "online agora" : "offline");
+}
+
 function newDirectForm() {
   openModal("Nova conversa", `<label class="field"><span>Usuário</span>
     <select id="nd_user">${mailUserOptions()}</select></label>`,
@@ -2611,7 +2653,7 @@ async function openDirectChat(otherUid) {
     });
     id = r.key;
   }
-  MSG.tab = "chat"; MSG.chatId = id;
+  MSG.tab = "chat"; MSG.chatId = id; MSG._mounted = null;
   if (STATE.view !== "mensagens") { STATE.view = "mensagens"; renderView(); } else renderMensagensBody();
 }
 function newGroupForm() {
@@ -2630,57 +2672,94 @@ function newGroupForm() {
       type: "group", name, members, createdBy: STATE.user.uid,
       createdAt: Date.now(), lastAt: Date.now(), lastText: ""
     });
-    MSG.chatId = r.key; closeModal(); toast("Grupo criado", "ok"); renderMensagensBody();
+    MSG.tab = "chat"; MSG.chatId = r.key; MSG._mounted = null; closeModal(); toast("Grupo criado", "ok"); renderMensagensBody();
   };
 }
 function openChat(chatId) {
   const c = MSG.chats[chatId]; const pane = $("#chatPane");
   if (!c || !pane) return;
-  const members = Object.keys(c.members || {});
+  MSG._mounted = chatId;
+  MSG.msgs = {};
+  const canSend = canChat() && !STATE.profile?.chatMuted;
   pane.innerHTML = `
-    <div class="card-head">
+    <div class="card-head chat-head">
+      <button class="btn btn-sm chat-back" id="chBack">←</button>
       <h3>${esc(chatTitle({ ...c, id: chatId }))}</h3>
       <div style="flex:1"></div>
       <div class="toolbar">
-        <span class="muted">${c.type === "group"
-      ? members.length + " participante(s) · " + members.filter(isOnline).length + " online"
-      : (isOnline(members.find(u => u !== STATE.user.uid)) ? "online agora" : "offline")}</span>
+        <span class="muted" id="chatInfo"></span>
         ${c.type === "group" ? `<button class="btn btn-sm" id="chMembers">Participantes</button>` : ""}
-        ${(c.createdBy === STATE.user.uid || isChatMod()) ? `<button class="btn btn-sm btn-danger" id="chDel">Excluir conversa</button>` : ""}
+        ${(c.createdBy === STATE.user.uid || isChatMod()) ? `<button class="btn btn-sm btn-danger" id="chDel">Excluir</button>` : ""}
       </div>
     </div>
     <div class="chat-box" id="chatBox"><div class="empty">Carregando mensagens...</div></div>
     <form class="chat-send" id="chatForm">
-      <input id="chatInput" placeholder="${canChat() && !STATE.profile?.chatMuted ? "Escreva sua mensagem..." : "Você está sem permissão para enviar mensagens"}"
-        ${canChat() && !STATE.profile?.chatMuted ? "" : "disabled"} autocomplete="off">
-      <button class="btn btn-primary" type="submit" ${canChat() && !STATE.profile?.chatMuted ? "" : "disabled"}>Enviar</button>
+      <input id="chatInput" placeholder="${canSend ? "Escreva sua mensagem..." : "Você está sem permissão para enviar mensagens"}"
+        ${canSend ? "" : "disabled"} autocomplete="off" enterkeyhint="send">
+      <button class="btn btn-primary" type="submit" ${canSend ? "" : "disabled"}>Enviar</button>
     </form>`;
 
+  refreshChatHeader(chatId);
+  $("#chBack").onclick = () => { MSG.chatId = null; MSG._mounted = null; renderMensagensBody(); };
   if ($("#chMembers")) $("#chMembers").onclick = () => groupMembersForm(chatId);
   if ($("#chDel")) $("#chDel").onclick = () => confirmDialog("Excluir a conversa e todas as mensagens?", async () => {
-    await remove(ref(db, "chatMessages/" + chatId));
-    await remove(ref(db, "chats/" + chatId));
-    MSG.chatId = null; toast("Conversa excluída", "ok"); renderMensagensBody();
+    try {
+      await remove(ref(db, "chatMessages/" + chatId));
+      await remove(ref(db, "chats/" + chatId));
+      MSG.chatId = null; MSG._mounted = null; toast("Conversa excluída", "ok"); renderMensagensBody();
+    } catch (e) { toast("Não foi possível excluir: " + e.message, "err"); }
   });
 
-  if (MSG.msgUnsub) { try { MSG.msgUnsub(); } catch (e) {} }
-  MSG.msgUnsub = onValue(query(ref(db, "chatMessages/" + chatId), orderByChild("at"), limitToLast(300)), snap => {
+  if (MSG.msgUnsub) { try { MSG.msgUnsub(); } catch (e) {} MSG.msgUnsub = null; }
+  let got = false;
+  const q = query(ref(db, "chatMessages/" + chatId), limitToLast(300));
+  MSG.msgUnsub = onValue(q, snap => {
+    got = true;
+    if (MSG._mounted !== chatId) return;
     MSG.msgs = snap.val() || {};
     drawChatMessages(chatId);
+    refreshMsgBadge();
     update(ref(db, "users/" + STATE.user.uid + "/chatSeen"), { [chatId]: Date.now() }).catch(() => {});
-  }, err => { const b = $("#chatBox"); if (b) b.innerHTML = `<div class="empty">Sem permissão para ler as mensagens (${esc(err.message)}).</div>`; });
+  }, err => {
+    got = true;
+    const b = $("#chatBox");
+    if (b) b.innerHTML = `<div class="empty">Não foi possível carregar as mensagens: ${esc(err.message)}<br>
+      Verifique se as regras do Realtime Database foram publicadas.</div>`;
+  });
+  setTimeout(() => {
+    if (got || MSG._mounted !== chatId) return;
+    const b = $("#chatBox");
+    if (b) b.innerHTML = `<div class="empty">Sem resposta do servidor. Verifique sua conexão com a internet
+      e se as regras do Realtime Database foram publicadas no Firebase.</div>`;
+  }, 8000);
 
-  $("#chatForm").onsubmit = async ev => {
+  const input = $("#chatInput");
+  const form = $("#chatForm");
+  form.onsubmit = async ev => {
     ev.preventDefault();
-    const input = $("#chatInput"); const text = input.value.trim();
-    if (!text) return;
+    const text = input.value.trim();
+    if (!text) { input.focus(); return; }
     input.value = "";
-    await push(ref(db, "chatMessages/" + chatId), {
-      uid: STATE.user.uid, name: myName(), text, at: Date.now()
-    });
-    await update(ref(db, "chats/" + chatId), { lastAt: Date.now(), lastText: text.slice(0, 60), lastBy: STATE.user.uid });
+    input.focus(); // mantém o teclado aberto no celular
+    try {
+      await push(ref(db, "chatMessages/" + chatId), {
+        uid: STATE.user.uid, name: myName(), text, at: Date.now()
+      });
+      await update(ref(db, "chats/" + chatId), { lastAt: Date.now(), lastText: text.slice(0, 60), lastBy: STATE.user.uid });
+    } catch (e) {
+      input.value = text;
+      toast("Não foi possível enviar: " + e.message, "err");
+    }
   };
+  if (input) {
+    input.addEventListener("focus", () => setTimeout(() => {
+      const box = $("#chatBox"); if (box) box.scrollTop = box.scrollHeight;
+      form.scrollIntoView({ block: "nearest" });
+    }, 250));
+    if (!("ontouchstart" in window)) input.focus();
+  }
 }
+
 function drawChatMessages(chatId) {
   const box = $("#chatBox"); if (!box) return;
   const msgs = list(MSG.msgs).sort((a, b) => (a.at || 0) - (b.at || 0));

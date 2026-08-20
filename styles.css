@@ -209,3 +209,20 @@ tbody tr:hover{background:var(--panel-2)}
 .chat-time{font-size:11px;margin-top:3px}
 .chat-send{display:flex;gap:8px;margin-top:10px}
 .chat-send input{flex:1}
+
+
+/* ---- Chat: layout responsivo e correções de teclado no celular ---- */
+.chat-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.chat-back{display:none}
+.chat-layout .msg-main{min-height:60vh}
+@media (max-width:900px){
+  .chat-layout{grid-template-columns:1fr}
+  .chat-layout.chat-open .msg-side{display:none}
+  .chat-layout:not(.chat-open) .msg-main{display:none}
+  .chat-back{display:inline-flex}
+  .chat-box{max-height:none;height:auto;flex:1;min-height:180px}
+  .chat-layout .msg-main{min-height:calc(100dvh - 190px)}
+  .chat-send{position:sticky;bottom:0;background:var(--panel);padding-top:8px}
+  .chat-send input{font-size:16px} /* evita zoom automático no iOS */
+  .chat-msg .bubble{max-width:88%}
+}
