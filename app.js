@@ -427,6 +427,8 @@ function viewDashboard(root) {
   const recPend = list(STATE.receivables).filter(r => r.status !== "recebido");
   const payPend = list(STATE.payables).filter(r => r.status !== "pago");
   const lowStock = prods.filter(p => num(p.qty) <= num(p.minQty || 0));
+  const nextPay = list(STATE.payables).filter(r => r.status !== "pago" && r.due).sort((a, b) => (a.due || "").localeCompare(b.due || "")).slice(0, 8);
+  const nextRec = list(STATE.receivables).filter(r => r.status !== "recebido" && r.due).sort((a, b) => (a.due || "").localeCompare(b.due || "")).slice(0, 8);
 
   root.innerHTML = `
   <div class="stats">
@@ -450,10 +452,69 @@ function viewDashboard(root) {
         `<tr><td>${fmtDate(s.date)}</td><td>${esc(s.customer || "—")}</td><td class="right">${money(s.total)}</td></tr>`).join(""))
         : `<div class="empty">Nenhuma venda registrada.</div>`}
     </div>
+  </div>
+  <div class="grid2">
+    <div class="card">
+      <div class="card-head"><h3>Próximos vencimentos a pagar</h3></div>
+      ${nextPay.length ? tbl(["Vencimento", "Descrição", "Valor"], nextPay.map(r =>
+        `<tr><td>${fmtDate(r.due)}</td><td>${esc(r.description)}</td><td class="right"><strong>${money(r.amount)}</strong></td></tr>`).join(""))
+        : `<div class="empty">Nenhum título a pagar em aberto.</div>`}
+    </div>
+    <div class="card">
+      <div class="card-head"><h3>Próximos vencimentos a receber</h3></div>
+      ${nextRec.length ? tbl(["Vencimento", "Descrição", "Valor"], nextRec.map(r =>
+        `<tr><td>${fmtDate(r.due)}</td><td>${esc(r.description)}</td><td class="right"><strong>${money(r.amount)}</strong></td></tr>`).join(""))
+        : `<div class="empty">Nenhum título a receber em aberto.</div>`}
+    </div>
   </div>`;
 }
 const stat = (l, v, d = "") => `<div class="stat"><small>${l}</small><b>${v}</b><div class="delta">${d}</div></div>`;
 const tbl = (heads, rows) => `<div class="tbl-wrap"><table><thead><tr>${heads.map(h => `<th>${h}</th>`).join("")}</tr></thead><tbody>${rows}</tbody></table></div>`;
+
+/* ================= PAGINAÇÃO — 10/20/30 por página, máx. 5 números + setas ‹ › ================= */
+const PAGER = {};
+function pagerState(id) { return PAGER[id] || (PAGER[id] = { size: 10, page: 1 }); }
+function paged(id, items) {
+  const st = pagerState(id);
+  const pages = Math.max(1, Math.ceil(items.length / st.size));
+  if (st.page > pages) st.page = pages;
+  return items.slice((st.page - 1) * st.size, st.page * st.size);
+}
+function pagerHTML(id, total) {
+  const st = pagerState(id);
+  const pages = Math.max(1, Math.ceil(total / st.size));
+  const start = Math.max(1, Math.min(st.page - 2, pages - 4));
+  const nums = [];
+  for (let i = start; i < start + Math.min(5, pages); i++) nums.push(i);
+  const from = total ? (st.page - 1) * st.size + 1 : 0;
+  const to = Math.min(total, st.page * st.size);
+  return `<div class="pager" data-pager="${id}" data-total="${total}">
+    <span class="pager-info">Exibindo ${from}–${to} de ${total}</span>
+    <div class="pager-btns">
+      ${pages > 5 ? `<button class="btn btn-sm" data-pg="prev" ${st.page <= 1 ? "disabled" : ""} title="Página anterior">‹</button>` : ""}
+      ${nums.map(n => `<button class="btn btn-sm ${n === st.page ? "btn-primary" : ""}" data-pg="${n}">${n}</button>`).join("")}
+      ${pages > 5 ? `<button class="btn btn-sm" data-pg="next" ${st.page >= pages ? "disabled" : ""} title="Próxima página">›</button>` : ""}
+    </div>
+    <select class="pager-size" data-pgsize title="Itens por página">${[10, 20, 30].map(s => `<option value="${s}" ${st.size === s ? "selected" : ""}>${s} por página</option>`).join("")}</select>
+  </div>`;
+}
+function bindPager(id, redraw) {
+  const box = document.querySelector(`[data-pager="${id}"]`);
+  if (!box) return;
+  const st = pagerState(id);
+  const total = +box.dataset.total || 0;
+  box.querySelectorAll("[data-pg]").forEach(b => b.onclick = () => {
+    const pages = Math.max(1, Math.ceil(total / st.size));
+    const v = b.dataset.pg;
+    if (v === "prev") st.page = Math.max(1, st.page - 1);
+    else if (v === "next") st.page = Math.min(pages, st.page + 1);
+    else st.page = +v;
+    redraw();
+  });
+  const sel = box.querySelector("[data-pgsize]");
+  if (sel) sel.onchange = () => { st.size = +sel.value; st.page = 1; redraw(); };
+}
+
 
 /* ================= PRODUTOS ================= */
 function viewProdutos(root) {
@@ -479,7 +540,7 @@ function viewProdutos(root) {
       .sort((a, b) => (a.name || "").localeCompare(b.name || ""));
     $("#pTable").innerHTML = rows.length ? tbl(
       ["", "Produto", "SKU", "Cód. barras", "Categoria", "Estoque", "Custo médio", "Preço venda", "Margem un. (R$ · %)", "Total", "Ações"],
-      rows.map(p => {
+      paged("prodPg", rows).map(p => {
         const m = margin(p);
         return `<tr>
         <td>${p.image ? `<img class="thumb" src="${p.image}" alt="">` : `<div class="thumb"></div>`}</td>
@@ -492,7 +553,8 @@ function viewProdutos(root) {
         <td><button class="btn btn-sm" data-edit="${p.id}">Editar</button>
             <button class="btn btn-sm btn-danger" data-del="${p.id}">Excluir</button></td></tr>`;
       }).join("")
-    ) : `<div class="empty">Nenhum item encontrado. Cadastre o primeiro produto.</div>`;
+    ) + pagerHTML("prodPg", rows.length) : `<div class="empty">Nenhum item encontrado. Cadastre o primeiro produto.</div>`;
+    bindPager("prodPg", draw);
     $$("[data-edit]", $("#pTable")).forEach(b => b.onclick = () => productForm(b.dataset.edit));
     $$("[data-del]", $("#pTable")).forEach(b => b.onclick = () => confirmDialog("Excluir este item do catálogo?", async () => {
       await remove(ref(db, "products/" + b.dataset.del)); toast("Item excluído", "ok");
@@ -578,7 +640,7 @@ function viewKits(root) {
   </div>`;
   $("#kTable").innerHTML = kits.length ? tbl(
     ["Kit", "Composição", "Custo dos itens", "Adicional", "Custo total", "Preço venda", "Margem (R$ · %)", "Montáveis", "Ações"],
-    kits.map(k => {
+    paged("kitPg", kits).map(k => {
       const base = (k.items || []).reduce((s, it) => s + num(STATE.products[it.productId]?.avgCost) * num(it.qty), 0);
       const total = base + num(k.extraCost);
       const marg = num(k.price) - total;
@@ -592,7 +654,8 @@ function viewKits(root) {
         <td><button class="btn btn-sm" data-edit="${k.id}">Editar</button>
             <button class="btn btn-sm btn-danger" data-del="${k.id}">Excluir</button></td></tr>`;
     }).join("")
-  ) : `<div class="empty">Nenhum kit criado. Combine itens do catálogo para formar kits.</div>`;
+  ) + pagerHTML("kitPg", kits.length) : `<div class="empty">Nenhum kit criado. Combine itens do catálogo para formar kits.</div>`;
+  bindPager("kitPg", renderView);
   $("#kNew").onclick = () => kitForm();
   $$("[data-edit]", $("#kTable")).forEach(b => b.onclick = () => kitForm(b.dataset.edit));
   $$("[data-del]", $("#kTable")).forEach(b => b.onclick = () => confirmDialog("Excluir este kit?", async () => {
@@ -731,7 +794,7 @@ function viewEstoque(root) {
       .some(v => (v || "").toLowerCase().includes(q)));
     $("#sTable").innerHTML = rows.length ? tbl(
       ["Produto", "SKU", "Categoria", "Local", "Qtd", "Mínimo", "Custo médio", "Custo total", "Preço venda", "Margem un. (R$ · %)", "Venda total", "Margem total (R$ · %)", "Entradas", "Ações"],
-      rows.map(p => {
+      paged("stkPg", rows).map(p => {
         const m = margin(p);
         const qty = num(p.qty);
         const cost = qty * num(p.avgCost);
@@ -751,7 +814,8 @@ function viewEstoque(root) {
           <td>${nEnt}</td>
           <td><button class="btn btn-sm" data-pedit="${p.id}">Editar</button></td></tr>`;
       }).join("")
-    ) : `<div class="empty">Nenhum produto encontrado.</div>`;
+    ) + pagerHTML("stkPg", rows.length) : `<div class="empty">Nenhum produto encontrado.</div>`;
+    bindPager("stkPg", drawStock);
     $$("[data-pedit]", $("#sTable")).forEach(b => b.onclick = () => productForm(b.dataset.pedit));
   };
   $("#sSearch").oninput = drawStock;
@@ -767,7 +831,7 @@ function viewEstoque(root) {
       e.supplier || "", e.doc || "", e.settlement || "", accName(e.accountId)])]);
   $("#eTable").innerHTML = per.length ? tbl(
     ["Data", "Produto", "Qtd", "Custo unit.", "Frete", "Total", "Custo médio anterior", "Novo custo médio", "Fornecedor", "Documento", "Ações"],
-    per.map(e => `<tr><td>${fmtDate(e.date)}</td>
+    paged("entPg", per).map(e => `<tr><td>${fmtDate(e.date)}</td>
       <td>${esc(STATE.products[e.productId]?.name || e.productName || "—")}</td>
       <td>${num(e.qty)}</td><td class="right">${money(e.unitCost)}</td><td class="right">${money(e.freight)}</td>
       <td class="right">${money(e.total)}</td>
@@ -775,8 +839,9 @@ function viewEstoque(root) {
       <td>${esc(e.supplier || "—")}</td><td>${esc(e.doc || "—")}</td>
       <td><button class="btn btn-sm" data-eedit="${e.id}">Editar</button>
           <button class="btn btn-sm btn-danger" data-edel="${e.id}">Excluir</button></td></tr>`).join("")
-  ) : `<div class="empty">Nenhuma entrada no período.</div>`;
+  ) + pagerHTML("entPg", per.length) : `<div class="empty">Nenhuma entrada no período.</div>`;
 
+  bindPager("entPg", drawEntries);
   $$("[data-eedit]", $("#eTable")).forEach(b => b.onclick = () => entryForm(b.dataset.eedit));
   $$("[data-edel]", $("#eTable")).forEach(b => b.onclick = () => {
     const e = { id: b.dataset.edel, ...STATE.entries[b.dataset.edel] };
@@ -1145,6 +1210,21 @@ function entryForm(id) {
       supplier: $("#x_supplier").value.trim(), doc: $("#x_doc").value.trim(),
       date: $("#x_date").value || todayISO(), updatedAt: Date.now(), editedBy: STATE.user?.email || ""
     });
+    if (e.settlement === "prazo") {
+      const linked = list(STATE.payables).filter(x => x.refKind === "entry" && x.refId === id);
+      if (linked.some(x => x.status === "pago")) {
+        toast("Atenção: há parcelas já pagas desta entrada — os títulos do Contas a pagar não foram alterados", "err");
+      } else if (linked.length) {
+        for (const r of linked) { await finRemoveByRef("payables", r.id); await remove(ref(db, "payables/" + r.id)); }
+        await createPayablesForEntry({
+          entryId: id, productName: p.name || e.productName || "item", qty: c.q,
+          total: withRate(c.q * c.unit, num(e.cardRate)), n: num(e.installments) || 1,
+          first: e.firstDue || $("#x_date").value || todayISO(),
+          supplier: $("#x_supplier").value.trim(), accountId: e.accountId || "", autoPay: !!e.autoPay
+        });
+        toast("Parcelas do Contas a pagar recalculadas", "ok");
+      }
+    }
     closeModal();
     toast("Entrada atualizada e estoque recalculado", "ok");
     renderView();
@@ -1184,15 +1264,18 @@ function viewVendas(root) {
         ${stat("Ticket médio", money(rows.length ? rev / rows.length : 0), periodLabel(pid))}
       </div>
       ${rows.length ? tbl(["Data", "Cliente", "Itens", "Pagamento", "Recebimento", "Custo", "Total", "Lucro (R$ · %)", "Ações"],
-      rows.map(s => `<tr><td>${fmtDate(s.date)}</td><td>${esc(s.customer || "—")}</td>
+      paged("venPg", rows).map(s => `<tr><td>${fmtDate(s.date)}</td><td>${esc(s.customer || "—")}</td>
       <td>${(s.items || []).map(i => `${num(i.qty)}× ${esc(i.name)}`).join("<br>")}</td>
       <td>${esc(s.payment || "—")}</td>
       <td>${s.settlement === "prazo" ? `<span class="pill warn">a receber</span>` : `<span class="pill ok">${esc(accName(s.accountId))}</span>`}</td>
       <td class="right">${money(s.cost)}</td>
       <td class="right"><strong>${money(s.total)}</strong></td>
       <td class="right">${marginCell(num(s.total) - num(s.cost), num(s.total) > 0 ? (num(s.total) - num(s.cost)) / num(s.total) * 100 : 0, num(s.total) > 0)}</td>
-      <td><button class="btn btn-sm btn-danger" data-del="${s.id}">Excluir</button></td></tr>`).join(""))
+      <td><button class="btn btn-sm" data-edit="${s.id}">Editar</button>
+          <button class="btn btn-sm btn-danger" data-del="${s.id}">Excluir</button></td></tr>`).join("")) + pagerHTML("venPg", rows.length)
       : `<div class="empty">Nenhuma venda no período.</div>`}`;
+    bindPager("venPg", draw);
+    $$("[data-edit]", root).forEach(b => b.onclick = () => saleForm(b.dataset.edit));
     $$("[data-del]", root).forEach(b => b.onclick = () => confirmDialog("Excluir a venda? Os lançamentos financeiros e títulos gerados por ela também serão desfeitos (o estoque não é devolvido automaticamente).", async () => {
       const id = b.dataset.del;
       await finRemoveByRef("sale", id);
@@ -1204,7 +1287,7 @@ function viewVendas(root) {
       toast("Venda excluída e saldo ajustado", "ok");
     }));
   };
-  $("#sNew").onclick = saleForm;
+  $("#sNew").onclick = () => saleForm();
   $("#v_q").oninput = draw;
   $("#v_csv").onclick = () => downloadCsv(`vendas_${periodOf(pid).from || "tudo"}`,
     [["Data", "Cliente", "Pagamento", "Recebimento", "Conta", "Itens", "Custo", "Total", "Lucro"],
@@ -1224,34 +1307,36 @@ function viewVendas(root) {
   draw();
 }
 
-function saleForm() {
-  let items = [];
+function saleForm(id) {
+  const editing = id ? { id, ...(STATE.sales[id] || {}) } : null;
+  let items = editing ? (editing.items || []).map(i => ({ ...i })) : [];
   const opts = [
     ...list(STATE.products).map(p => `<option value="p:${p.id}">${esc(p.name)} — ${money(p.price)}</option>`),
     ...list(STATE.kits).map(k => `<option value="k:${k.id}">[KIT] ${esc(k.name)} — ${money(k.price)}</option>`)
   ].join("");
-  openModal("Nova venda", `
+  openModal(editing ? "Editar venda" : "Nova venda", `
     <div class="grid3">
-      <label class="field"><span>Cliente</span><input id="s_customer"></label>
-      <label class="field"><span>Data</span><input id="s_date" type="date" value="${todayISO()}"></label>
+      <label class="field"><span>Cliente</span><input id="s_customer" value="${esc(editing?.customer || "")}"></label>
+      <label class="field"><span>Data</span><input id="s_date" type="date" value="${esc(editing?.date || todayISO())}"></label>
       <label class="field"><span>Forma de pagamento</span><select id="s_pay">
         <option>Dinheiro</option><option>PIX</option><option>Débito</option><option>Crédito</option><option>Boleto</option><option>A prazo</option></select></label>
-      <label class="field"><span>Desconto (R$)</span><input id="s_disc" type="number" step="0.01" value="0"></label>
-      <label class="field"><span>Frete cobrado (R$)</span><input id="s_freight" type="number" step="0.01" value="0"></label>
+      <label class="field"><span>Desconto (R$)</span><input id="s_disc" type="number" step="0.01" value="${num(editing?.discount)}"></label>
+      <label class="field"><span>Frete cobrado (R$)</span><input id="s_freight" type="number" step="0.01" value="${num(editing?.freight)}"></label>
       <label class="field"><span>Recebimento</span><select id="s_rec">
         <option value="imediato">À vista — credita no saldo agora</option>
         <option value="prazo">A prazo — gera conta a receber</option></select></label>
-      <label class="field"><span>Conta de destino</span><select id="s_acc">${accountOptions(defaultAccount())}</select></label>
+      <label class="field"><span>Conta de destino</span><select id="s_acc">${accountOptions(editing?.accountId || defaultAccount())}</select></label>
       <label class="field"><span>Juros/desconto cartão de crédito (%)</span>
-        <input id="s_juros" type="number" step="0.01" value="0" placeholder="Ex.: 2,99 = juros · -3 = desconto"></label>
+        <input id="s_juros" type="number" step="0.01" value="${num(editing?.cardRate)}" placeholder="Ex.: 2,99 = juros · -3 = desconto"></label>
       <label class="field hidden" id="s_instWrap"><span>Parcelas (a prazo)</span>
         <select id="s_inst">${Array.from({ length: 12 }, (_, i) => `<option value="${i + 1}">${i + 1}x</option>`).join("")}</select></label>
       <label class="field hidden" id="s_firstWrap"><span>Vencimento da 1ª parcela</span>
-        <input id="s_first" type="date" value="${addMonthsISO(todayISO(), 1)}"></label>
+        <input id="s_first" type="date" value="${addMonthsISO(editing?.date || todayISO(), 1)}"></label>
       <label class="field hidden" id="s_autoWrap"><span>Recebimento das parcelas</span><select id="s_auto">
         <option value="0" selected>Manual — fica em aberto no Contas a receber</option>
         <option value="1">Automático — quita na data do vencimento</option></select></label>
     </div>
+    ${editing ? `<p class="muted">Ao salvar, o estoque dos itens antigos é devolvido e o dos novos itens é baixado; os lançamentos financeiros e os títulos a receber ligados à venda são refeitos.</p>` : ""}
     <div class="hidden" id="s_instPrev" style="margin-top:8px"></div>
     <div class="section-title">Itens da venda</div>
     <div class="toolbar">
@@ -1261,7 +1346,16 @@ function saleForm() {
     </div>
     <div id="s_list"></div>
     <div class="stat" style="margin-top:6px"><small>Total da venda</small><b id="s_total">R$ 0,00</b><div class="delta" id="s_info"></div></div>
-  `, `<button class="btn" id="mCancel">Cancelar</button><button class="btn btn-primary" id="mSave">Registrar venda</button>`);
+  `, `<button class="btn" id="mCancel">Cancelar</button><button class="btn btn-primary" id="mSave">${editing ? "Salvar alterações" : "Registrar venda"}</button>`);
+
+  if (editing) {
+    $("#s_pay").value = editing.payment || "Dinheiro";
+    $("#s_rec").value = editing.settlement || "imediato";
+    $("#s_inst").value = String(Math.max(1, Math.min(12, num(editing.installments) || 1)));
+    $("#s_first").value = editing.firstDue || addMonthsISO(editing.date || todayISO(), 1);
+    $("#s_auto").value = editing.autoPay ? "1" : "0";
+    $("#s_first").dataset.touched = "1";
+  }
 
   const draw = () => {
     $("#s_list").innerHTML = items.length ? tbl(["Item", "Qtd", "Preço unit.", "Custo unit.", "Subtotal", ""],
@@ -1319,32 +1413,47 @@ function saleForm() {
     const cost = items.reduce((s, i) => s + num(i.cost) * num(i.qty), 0);
     const cardRate = num($("#s_juros").value);
     const total = withRate(sub - num($("#s_disc").value) + num($("#s_freight").value), cardRate);
-    // baixa de estoque
+    if (editing) {
+      const linked = list(STATE.receivables).filter(r => r.refKind === "sale" && r.refId === id);
+      if (linked.some(r => r.status === "recebido"))
+        return toast("Esta venda possui parcelas já recebidas no financeiro. Reabra os títulos em Contas a receber antes de editar.", "err");
+    }
+    // estoque: devolve os itens antigos (na edição) e baixa os novos
     const updates = {};
+    const addQty = (pid, delta) => {
+      const key = "products/" + pid + "/qty";
+      updates[key] = (key in updates ? updates[key] : num(STATE.products[pid]?.qty)) + delta;
+    };
+    if (editing) for (const it of editing.items || []) {
+      if (it.type === "product") addQty(it.id, num(it.qty));
+      else for (const ki of (STATE.kits[it.id]?.items || [])) { if (!STATE.products[ki.productId]) continue; addQty(ki.productId, num(ki.qty) * num(it.qty)); }
+    }
     for (const it of items) {
-      if (it.type === "product") {
-        const p = STATE.products[it.id];
-        updates["products/" + it.id + "/qty"] = num(p.qty) - num(it.qty);
-      } else {
-        for (const ki of (STATE.kits[it.id].items || [])) {
-          const p = STATE.products[ki.productId]; if (!p) continue;
-          const key = "products/" + ki.productId + "/qty";
-          const cur = key in updates ? updates[key] : num(p.qty);
-          updates[key] = cur - num(ki.qty) * num(it.qty);
-        }
-      }
+      if (it.type === "product") addQty(it.id, -num(it.qty));
+      else for (const ki of (STATE.kits[it.id]?.items || [])) { if (!STATE.products[ki.productId]) continue; addQty(ki.productId, -num(ki.qty) * num(it.qty)); }
     }
     await update(ref(db), updates);
+    const settlement = $("#s_rec").value;
+    const accId = $("#s_acc") ? $("#s_acc").value : "";
     const sale = {
       customer: $("#s_customer").value.trim(), date: $("#s_date").value || todayISO(),
       payment: $("#s_pay").value, discount: num($("#s_disc").value), freight: num($("#s_freight").value),
-      cardRate,
-      items, subtotal: sub, cost, total, user: STATE.user.email, createdAt: Date.now()
+      cardRate, items, subtotal: sub, cost, total,
+      settlement, accountId: settlement === "imediato" ? accId : "",
+      user: editing ? (editing.user || STATE.user.email) : STATE.user.email
     };
-    const settlement = $("#s_rec").value;
-    const accId = $("#s_acc") ? $("#s_acc").value : "";
-    sale.settlement = settlement; sale.accountId = settlement === "imediato" ? accId : "";
-    const saleRef = await push(ref(db, "sales"), sale);
+    let saleId;
+    if (editing) {
+      saleId = id;
+      await finRemoveByRef("sale", id);
+      for (const r of list(STATE.receivables).filter(r => r.refKind === "sale" && r.refId === id)) {
+        await finRemoveByRef("receivables", r.id);
+        await remove(ref(db, "receivables/" + r.id));
+      }
+      await update(ref(db, "sales/" + id), { ...sale, createdAt: editing.createdAt || Date.now(), updatedAt: Date.now(), editedBy: STATE.user?.email || "" });
+    } else {
+      saleId = (await push(ref(db, "sales"), { ...sale, createdAt: Date.now() })).key;
+    }
     if (settlement === "prazo") {
       const n = Math.max(1, Math.min(12, parseInt($("#s_inst").value) || 1));
       const first = $("#s_first").value || sale.date;
@@ -1354,24 +1463,24 @@ function saleForm() {
         await push(ref(db, "receivables"), {
           description: "Venda " + (sale.customer || "balcão") + (n > 1 ? ` — parcela ${part.i}/${n}` : ""),
           customer: sale.customer, amount: part.amount, due: part.due, status: "pendente",
-          category: "Venda", accountId: accId, refKind: "sale", refId: saleRef.key,
+          category: "Venda", accountId: accId, refKind: "sale", refId: saleId,
           installment: part.i, installments: n, autoPay: autoReceive, createdAt: Date.now()
         });
       }
-      await update(ref(db, "sales/" + saleRef.key), { installments: n, firstDue: parts[0].due, autoPay: autoReceive });
+      await update(ref(db, "sales/" + saleId), { installments: n, firstDue: parts[0].due, autoPay: autoReceive });
       STATE.finTab = "rec";
-      toast(n > 1
-        ? `Venda registrada · ${n} parcelas geradas no contas a receber (venc. ${fmtDate(parts[0].due)} a ${fmtDate(parts[n - 1].due)})`
-        : "Venda registrada e conta a receber gerada", "ok");
+      toast((editing ? "Venda atualizada · " : "Venda registrada · ") + (n > 1
+        ? `${n} parcelas geradas no contas a receber (venc. ${fmtDate(parts[0].due)} a ${fmtDate(parts[n - 1].due)})`
+        : "conta a receber gerada"), "ok");
     } else if (accId) {
       await finAdd({
         date: sale.date, kind: "venda", amount: total, accountId: accId,
         description: "Venda " + (sale.customer || "balcão"), party: sale.customer,
-        refKind: "sale", refId: saleRef.key
+        refKind: "sale", refId: saleId
       });
-      toast(`Venda registrada · ${money(total)} creditado em ${accName(accId)}`, "ok");
+      toast(`${editing ? "Venda atualizada" : "Venda registrada"} · ${money(total)} creditado em ${accName(accId)}`, "ok");
     } else {
-      toast("Venda registrada, mas cadastre uma conta no Financeiro para creditar o saldo", "err");
+      toast(editing ? "Venda atualizada (sem conta de destino, nada foi creditado no saldo)" : "Venda registrada, mas cadastre uma conta no Financeiro para creditar o saldo", editing ? "ok" : "err");
     }
     closeModal();
   };
@@ -1538,7 +1647,7 @@ function finLedger(el, kinds, title, pidBase, defaultKind) {
         ${stat("Líquido", money(tin - tout), rows.length + " lançamento(s)")}
       </div>
       ${rows.length ? tbl(["Data", "Tipo", "Descrição", "Pessoa / empresa", "Conta", "Entrada", "Saída", "Origem", "Ações"],
-      rows.map(f => `<tr><td>${fmtDate(f.date)}</td>
+      paged(pidBase + "Pg", rows).map(f => `<tr><td>${fmtDate(f.date)}</td>
         <td><span class="pill ${f.dir === "in" ? "ok" : "dan"}">${esc(kindLabel(f.kind))}</span></td>
         <td>${esc(f.description || "—")}</td><td>${esc(f.party || "—")}</td><td>${esc(accName(f.accountId))}</td>
         <td class="right">${f.dir === "in" ? money(f.amount) : "—"}</td>
@@ -1546,8 +1655,9 @@ function finLedger(el, kinds, title, pidBase, defaultKind) {
         <td><small class="muted">${esc(f.refKind || "manual")}</small></td>
         <td>${f.refKind && f.refKind !== "manual" ? `<span class="muted">automático</span>` :
         `<button class="btn btn-sm" data-fedit="${f.id}">Editar</button>
-             <button class="btn btn-sm btn-danger" data-fdel="${f.id}">Excluir</button>`}</td></tr>`).join(""))
+             <button class="btn btn-sm btn-danger" data-fdel="${f.id}">Excluir</button>`}</td></tr>`).join("")) + pagerHTML(pidBase + "Pg", rows.length)
       : `<div class="empty">Nenhum movimento no período.</div>`}`;
+    bindPager(pidBase + "Pg", draw);
     $$("[data-fedit]", el).forEach(b => b.onclick = () => finForm(kinds, defaultKind, b.dataset.fedit));
     $$("[data-fdel]", el).forEach(b => b.onclick = () => confirmDialog("Excluir este movimento? O saldo será recalculado.", async () => {
       await remove(ref(db, "fin/" + b.dataset.fdel)); toast("Movimento excluído", "ok");
@@ -1663,7 +1773,7 @@ function accountsPanel(el, node, title, doneStatus, partyLabel) {
       ${node === "payables" && entriesMissingPayables().length ? `<div class="alert" style="margin-bottom:12px">${entriesMissingPayables().length} entrada(s) a prazo do Estoque/Compras ainda sem título aqui. Clique em <strong>Gerar títulos faltantes</strong>.</div>` : ""}
       ${hidden ? `<div class="alert" style="margin-bottom:12px">${hidden} título(s) com vencimento fora do filtro <strong>${periodLabel(pid)}</strong> estão ocultos. Selecione <strong>Tudo</strong> no período para ver as parcelas futuras.</div>` : ""}
       ${rows.length ? tbl(["Vencimento", "Descrição", partyLabel, "Categoria", "Valor", "Situação", "Conta / liquidação", "Ações"],
-      rows.map(r => {
+      paged(pidBase + "Pg", rows).map(r => {
         const done = r.status === doneStatus;
         const late = !done && (r.due || "") < todayISO();
         const autoTag = r.autoPay ? ` <span class="pill" title="Será liquidado automaticamente na conta escolhida, na data do vencimento">${node === "payables" ? "débito automático" : "recebimento automático"}</span>` : "";
@@ -1679,8 +1789,9 @@ function accountsPanel(el, node, title, doneStatus, partyLabel) {
           `<button class="btn btn-sm btn-ok" data-ok="${r.id}">Liquidar</button> ` +
           `<button class="btn btn-sm" data-auto="${r.id}">${r.autoPay ? "Desligar auto" : "Ligar auto"}</button> `}
             <button class="btn btn-sm btn-danger" data-del="${r.id}">Excluir</button></td></tr>`;
-      }).join("")) : `<div class="empty">Nenhum lançamento no período.</div>`}`;
+      }).join("")) + pagerHTML(pidBase + "Pg", rows.length) : `<div class="empty">Nenhum lançamento no período.</div>`}`;
 
+    bindPager(pidBase + "Pg", draw);
     $$("[data-ok]", el).forEach(b => b.onclick = () => settleForm(node, b.dataset.ok, doneStatus));
     $$("[data-auto]", el).forEach(b => b.onclick = async () => {
       const r = STATE[node][b.dataset.auto] || {};
@@ -1821,6 +1932,8 @@ function cashFlow(el) {
     const maxDay = Math.max(1, ...days.map(d => Math.abs(d[1])));
     const expP = list(STATE.expenses).filter(e => inPeriod(e.date, pid)).reduce((s, e) => s + num(e.amount), 0);
     const salesP = list(STATE.sales).filter(s => inPeriod(s.date, pid));
+    const upPay = list(STATE.payables).filter(r => r.status !== "pago" && r.due).sort((a, b) => (a.due || "").localeCompare(b.due || ""));
+    const upRec = list(STATE.receivables).filter(r => r.status !== "recebido" && r.due).sort((a, b) => (a.due || "").localeCompare(b.due || ""));
     $("#fx_body").innerHTML = `
       <div class="stats">
         ${stat("Entradas do período", money(tin))}
@@ -1846,7 +1959,21 @@ function cashFlow(el) {
         ${days.length ? `<div class="bars">${days.map(([d, v]) =>
           `<div class="bar-row"><span>${fmtDate(d)}</span><div class="bar"><i style="width:${(Math.abs(v) / maxDay * 100).toFixed(1)}%;background:${v >= 0 ? "var(--ok)" : "var(--danger)"}"></i></div><span class="right">${money(v)}</span></div>`).join("")}</div>`
         : `<div class="empty">Sem movimentos no período.</div>`}</div>
-      <div class="card"><div class="card-head"><h3>Saídas por categoria</h3></div>${barsByCategory(pid)}</div>`;
+      <div class="card"><div class="card-head"><h3>Saídas por categoria</h3></div>${barsByCategory(pid)}</div>
+      <div class="grid2">
+        <div class="card"><div class="card-head"><h3>Programado a pagar — próximos vencimentos</h3></div>
+          ${upPay.length ? tbl(["Vencimento", "Descrição", "Fornecedor", "Valor"],
+            upPay.slice(0, 10).map(r => `<tr><td>${fmtDate(r.due)}</td><td>${esc(r.description)}</td><td>${esc(r.supplier || "—")}</td>
+              <td class="right"><strong>${money(r.amount)}</strong></td></tr>`).join("") +
+            `<tr><td colspan="3"><strong>Total em aberto</strong></td><td class="right"><strong>${money(upPay.reduce((s, r) => s + num(r.amount), 0))}</strong></td></tr>`)
+          : `<div class="empty">Nenhum título a pagar em aberto.</div>`}</div>
+        <div class="card"><div class="card-head"><h3>Programado a receber — próximos vencimentos</h3></div>
+          ${upRec.length ? tbl(["Vencimento", "Descrição", "Cliente", "Valor"],
+            upRec.slice(0, 10).map(r => `<tr><td>${fmtDate(r.due)}</td><td>${esc(r.description)}</td><td>${esc(r.customer || "—")}</td>
+              <td class="right"><strong>${money(r.amount)}</strong></td></tr>`).join("") +
+            `<tr><td colspan="3"><strong>Total em aberto</strong></td><td class="right"><strong>${money(upRec.reduce((s, r) => s + num(r.amount), 0))}</strong></td></tr>`)
+          : `<div class="empty">Nenhum título a receber em aberto.</div>`}</div>
+      </div>`;
   };
   $("#fx_csv").onclick = () => downloadCsv(`fluxo_${periodOf(pid).from || "tudo"}`,
     [["Data", "Tipo", "Descrição", "Conta", "Entrada", "Saída"],
@@ -1911,15 +2038,16 @@ function viewDespesas(root) {
         ${stat("Maior categoria", byCat[0] ? byCat[0][0] : "—", byCat[0] ? money(byCat[0][1]) : "")}
       </div>
       ${rows.length ? tbl(["Data", "Categoria", "Descrição", "Fornecedor/Responsável", "Conta", "Veículo/Placa", "Km", "Pagamento", "Valor", "Ações"],
-      rows.map(r => `<tr><td>${fmtDate(r.date)}</td><td><span class="pill">${esc(r.category)}</span></td>
+      paged("despPg", rows).map(r => `<tr><td>${fmtDate(r.date)}</td><td><span class="pill">${esc(r.category)}</span></td>
       <td>${esc(r.description)}</td><td>${esc(r.party || "—")}</td><td>${esc(r.accountId ? accName(r.accountId) : "—")}</td>
       <td>${esc(r.vehicle || "—")}</td><td>${r.km ? num(r.km) : "—"}</td><td>${esc(r.payment || "—")}</td>
       <td class="right"><strong>${money(r.amount)}</strong></td>
       <td><button class="btn btn-sm" data-edit="${r.id}">Editar</button>
-          <button class="btn btn-sm btn-danger" data-del="${r.id}">Excluir</button></td></tr>`).join(""))
+          <button class="btn btn-sm btn-danger" data-del="${r.id}">Excluir</button></td></tr>`).join("")) + pagerHTML("despPg", rows.length)
       : `<div class="empty">Nenhuma despesa no período.</div>`}
       <div class="card" style="margin-top:14px"><div class="card-head"><h3>Por categoria</h3></div>
         ${byCat.length ? tbl(["Categoria", "Total"], byCat.map(([c, v]) => `<tr><td>${esc(c)}</td><td class="right">${money(v)}</td></tr>`).join("")) : `<div class="empty">Sem dados.</div>`}</div>`;
+    bindPager("despPg", draw);
     $$("[data-edit]", $("#dBody")).forEach(b => b.onclick = () => expenseForm(b.dataset.edit));
     $$("[data-del]", $("#dBody")).forEach(b => b.onclick = () => confirmDialog("Excluir despesa? O lançamento no saldo também será desfeito.", async () => {
       await finRemoveByRef("expense", b.dataset.del);
@@ -2108,7 +2236,7 @@ function viewUsuarios(root) {
       <button class="btn btn-primary" id="uNew">+ Criar usuário</button></div>
     <p class="muted">Os usuários são autenticados pelo Firebase Authentication. As funções e permissões abaixo são armazenadas no Realtime Database e definem o que cada um pode acessar.</p>
     <div style="margin-top:12px">${users.length ? tbl(["Nome", "E-mail", "Telefone", "Função", "Permissões", "Ações"],
-      users.map(u => `<tr>
+      paged("usrPg", users).map(u => `<tr>
         <td>${esc(((u.firstName || "") + " " + (u.lastName || "")).trim() || "—")}</td>
         <td>${esc(u.email)}</td><td>${esc(u.phone || "—")}</td>
         <td><span class="pill ${u.email === ADMIN_EMAIL ? "ok" : ""}">${esc(u.email === ADMIN_EMAIL ? "admin geral" : (u.role || "colaborador"))}</span></td>
@@ -2116,8 +2244,10 @@ function viewUsuarios(root) {
         <td>${u.email === ADMIN_EMAIL ? "<span class='muted'>protegido</span>" :
           `<button class="btn btn-sm" data-perm="${u.id}">Permissões</button>
            <button class="btn btn-sm btn-danger" data-del="${u.id}">Remover</button>`}</td></tr>`).join(""))
-      : `<div class="empty">Nenhum usuário registrado ainda.</div>`}</div>
+      : `<div class="empty">Nenhum usuário registrado ainda.</div>`}
+    ${users.length ? pagerHTML("usrPg", users.length) : ""}</div>
   </div>`;
+  bindPager("usrPg", renderView);
   $("#uNew").onclick = createUserForm;
   $$("[data-perm]", root).forEach(b => b.onclick = () => permsForm(b.dataset.perm));
   $$("[data-del]", root).forEach(b => b.onclick = () => confirmDialog("Remover o perfil e as permissões deste usuário? (A conta de login continua no Firebase Authentication e deve ser excluída pelo console)", async () => {
@@ -2461,7 +2591,7 @@ function mailView(el) {
   const draw = () => {
     const q = ($("#mailQ").value || "").toLowerCase();
     const data = rows.filter(m => !q || [m.subject, m.body, m.fromName, m.toNames].some(v => (v || "").toLowerCase().includes(q)));
-    $("#mailRows").innerHTML = data.length ? `<div class="mail-list">${data.map(m => `
+    $("#mailRows").innerHTML = data.length ? `<div class="mail-list">${paged("mailPg", data).map(m => `
       <div class="mail-row ${m.read || box === "sent" || box === "drafts" ? "" : "unread"}" data-open="${m._box}:${m.id}">
         <button class="star ${m.starred ? "on" : ""}" data-star="${m._box}:${m.id}" title="Favoritar">★</button>
         <div class="mail-who">${esc(box === "sent" || box === "drafts" ? "Para: " + (m.toNames || "—") : (m.fromName || "—"))}</div>
@@ -2469,7 +2599,7 @@ function mailView(el) {
           <span class="muted"> — ${esc((m.body || "").slice(0, 80))}</span></div>
         <div class="mail-date muted">${fmtWhen(m.at)}</div>
         <button class="btn btn-sm btn-danger" data-mdel="${m._box}:${m.id}">${box === "trash" ? "Excluir" : "Lixeira"}</button>
-      </div>`).join("")}</div>`
+      </div>`).join("")}</div>` + pagerHTML("mailPg", data.length)
       : `<div class="empty">Nenhuma mensagem nesta pasta.</div>`;
 
     $$("[data-open]", el).forEach(r => r.onclick = ev => {
@@ -2489,6 +2619,7 @@ function mailView(el) {
       await remove(ref(db, `mail/${STATE.user.uid}/${bx}/${id}`));
       toast("Movida para a lixeira", "ok");
     });
+    bindPager("mailPg", draw);
   };
   $("#mailQ").oninput = draw;
   draw();
