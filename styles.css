@@ -241,3 +241,68 @@ td .btn-sm{margin:1px 3px 1px 0;white-space:nowrap}
 .modal-foot{flex-wrap:wrap}
 .btn:disabled{opacity:.55;cursor:not-allowed}
 @media print{ .pager{display:none !important} }
+
+
+/* ================= Logo do login (128x128 fixo) ================= */
+.logo-box{width:128px !important;height:128px !important;min-width:128px;flex:0 0 128px;align-self:center}
+#loginLogo{width:128px !important;height:128px !important;max-width:none;object-fit:contain}
+
+/* ================= Animação spin (login) ================= */
+@keyframes spin{to{transform:rotate(360deg)}}
+.spin{display:inline-block;width:16px;height:16px;border:2px solid currentColor;border-right-color:transparent;
+  border-radius:50%;animation:spin .7s linear infinite;vertical-align:-3px;margin-right:8px}
+.spin-lg{width:48px;height:48px;border-width:4px;margin:0;color:var(--primary)}
+.login-overlay{position:fixed;inset:0;z-index:300;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  gap:14px;background:rgba(3,6,12,.65);backdrop-filter:blur(3px);color:var(--text);font-weight:600}
+#loginBtn{display:inline-flex;align-items:center;justify-content:center}
+
+/* ================= Ajustes mobile ================= */
+html,body{max-width:100%;overflow-x:hidden}
+img,video,canvas{max-width:100%}
+.login-wrap{min-height:100dvh}
+@media (max-width:600px){
+  body{font-size:14px}
+  input,select,textarea{font-size:16px} /* evita zoom no iOS e padroniza altura */
+  .btn{font-size:14px;padding:10px 12px;min-height:40px}
+  .btn-sm{font-size:12.5px;padding:7px 10px;min-height:32px}
+  .icon-btn{width:38px;height:38px;flex:0 0 38px}
+  .login-wrap{padding:16px;padding-top:max(16px,env(safe-area-inset-top));padding-bottom:max(16px,env(safe-area-inset-bottom))}
+  .login-card{padding:22px 18px;border-radius:16px;max-width:100%}
+  .login-title{font-size:19px}
+  .topbar{gap:8px;padding-left:12px;padding-right:12px}
+  .topbar h2{font-size:16px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;flex:1}
+  .content{padding:12px}
+  .card{padding:14px}
+  .card-head{gap:8px}
+  .card-head h3{font-size:15px}
+  .stats{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+  .stat{padding:12px;min-width:0}
+  .stat b{font-size:18px;display:block;overflow-wrap:anywhere}
+  .stat small{font-size:11.5px}
+  .toolbar{gap:8px}
+  .toolbar input,.toolbar select{width:100%;min-width:0;flex:1 1 100%}
+  .toolbar .btn{flex:1 1 auto}
+  .toolbar[data-period]{display:flex;flex-wrap:wrap;width:100%}
+  .toolbar[data-period] input,.toolbar[data-period] select{min-width:0;flex:1 1 45%}
+  .tbl-wrap{-webkit-overflow-scrolling:touch}
+  table{font-size:13px}
+  .tabs{flex-wrap:nowrap;overflow-x:auto;-webkit-overflow-scrolling:touch;padding-bottom:4px}
+  .tab{flex:0 0 auto;font-size:13px}
+  .bar-row{grid-template-columns:minmax(0,90px) 1fr minmax(0,70px);font-size:12px}
+  .bar-row > *{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .modal-backdrop{padding:10px;align-items:start}
+  .modal{border-radius:14px}
+  .modal-head,.modal-body,.modal-foot{padding-left:14px;padding-right:14px}
+  .modal-body{max-height:calc(100dvh - 150px)}
+  .modal-foot .btn{flex:1 1 auto}
+  .perm-grid{grid-template-columns:1fr}
+  .pager{gap:8px}
+  .pager-info{flex:1 1 100%;margin-right:0}
+  .pager-size{flex:1 1 auto}
+  .toasts{left:12px;right:12px;bottom:12px}
+  .user-chip .uinfo{min-width:0}
+  .user-chip .uinfo strong,.user-chip .uinfo small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+}
+@media (max-width:360px){
+  .stats{grid-template-columns:1fr}
+}

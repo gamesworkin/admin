@@ -114,12 +114,12 @@ $$(".pw-toggle").forEach(b => b.onclick = () => {
 $("#loginForm").addEventListener("submit", async e => {
   e.preventDefault();
   const err = $("#loginError"); err.classList.add("hidden");
-  const btn = $("#loginBtn"); btn.disabled = true; btn.textContent = "Entrando...";
+  const btn = $("#loginBtn"); btn.disabled = true; btn.innerHTML = '<span class="spin"></span>Entrando...'; $("#loginOverlay").classList.remove("hidden");
   try {
     await signInWithEmailAndPassword(auth, $("#loginEmail").value.trim(), $("#loginPass").value);
   } catch (ex) {
     err.textContent = fbErr(ex); err.classList.remove("hidden");
-  } finally { btn.disabled = false; btn.textContent = "Entrar"; }
+  } finally { btn.disabled = false; btn.textContent = "Entrar"; setTimeout(() => $("#loginOverlay").classList.add("hidden"), 400); }
 });
 $("#openForgot").onclick = () => {
   $("#forgotEmail").value = $("#loginEmail").value.trim();
@@ -230,7 +230,7 @@ function bindData() {
 function loadPublicSettings() {
   get(ref(db, "settings")).then(s => {
     const st = s.val() || {};
-    if (st.logo) { $("#loginLogo").src = st.logo; $("#loginLogo").style.display = "block"; $("#loginLogoFallback").classList.add("hidden"); }
+    if (st.logo) { /* logo do login fixa: logo.png */ }
   }).catch(() => {});
 }
 loadPublicSettings();
@@ -253,7 +253,7 @@ function renderShell() {
 function applySettingsUI() {
   const st = STATE.settings || {};
   if (st.companyName) { $("#brandName").textContent = st.companyName; document.title = st.companyName + " — Sistema Gerencial"; }
-  if (st.logo) { $("#sideLogo").src = st.logo; $("#loginLogo").src = st.logo; $("#loginLogo").style.display = "block"; $("#loginLogoFallback").classList.add("hidden"); }
+  if (st.logo) { $("#sideLogo").src = st.logo; /* logo do login fixa: logo.png */ }
 }
 
 const VIEWS = {
@@ -3234,3 +3234,14 @@ function chatAdminView(el) {
   });
   $$("[data-open]", el).forEach(b => b.onclick = () => openDirectChat(b.dataset.open));
 }
+
+/* ===== Logo do login sempre logo.png (128x128) ===== */
+(() => {
+  const img = document.getElementById("loginLogo"), fb = document.getElementById("loginLogoFallback");
+  if (!img) return;
+  const fix = () => { if (!img.getAttribute("src") || !/(^|\/)logo\.png(\?|$)/.test(img.getAttribute("src"))) img.setAttribute("src", "logo.png"); };
+  img.addEventListener("load", () => { img.style.display = "block"; fb && fb.classList.add("hidden"); });
+  img.addEventListener("error", () => { img.style.display = "none"; fb && fb.classList.remove("hidden"); });
+  new MutationObserver(fix).observe(img, { attributes: true, attributeFilter: ["src"] });
+  fix(); if (img.complete && img.naturalWidth) { img.style.display = "block"; fb && fb.classList.add("hidden"); }
+})();
