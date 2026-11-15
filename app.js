@@ -471,7 +471,7 @@ function viewDashboard(root) {
   const nextPay = list(STATE.payables).filter(r => r.status !== "pago" && r.due).sort((a, b) => (a.due || "").localeCompare(b.due || "")).slice(0, 8);
   const nextRec = list(STATE.receivables).filter(r => r.status !== "recebido" && r.due).sort((a, b) => (a.due || "").localeCompare(b.due || "")).slice(0, 8);
 
-  root.innerHTML = `
+  root.innerHTML = `<div class="dash">
   <div class="stats">
     ${stat("Faturamento do mês", money(revenue), salesMonth.length + " venda(s)")}
     ${stat("Lucro bruto do mês", money(revenue - cogs), "Custo: " + money(cogs))}
@@ -507,7 +507,7 @@ function viewDashboard(root) {
         `<tr><td>${fmtDate(r.due)}</td><td>${esc(r.description)}</td><td class="right"><strong>${money(r.amount)}</strong></td></tr>`).join(""))
         : `<div class="empty">Nenhum título a receber em aberto.</div>`}
     </div>
-  </div>`;
+  </div></div>`;
 }
 const stat = (l, v, d = "") => `<div class="stat"><small>${l}</small><b>${v}</b><div class="delta">${d}</div></div>`;
 const tbl = (heads, rows) => `<div class="tbl-wrap"><table><thead><tr>${heads.map(h => `<th>${h}</th>`).join("")}</tr></thead><tbody>${rows}</tbody></table></div>`;
